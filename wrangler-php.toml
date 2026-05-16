@@ -1,0 +1,22 @@
+# CloudPress PHP Runner Worker 배포 설정
+# php-wasm으로 WordPress를 직접 실행하는 Worker
+name               = "cp-be32d9c3-wp-php"
+main               = "php-runner.js"
+compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[limits]
+cpu_ms = 50000
+
+# ── 캐시 (KV) — 메인 Worker와 같은 KV 공유 ──────────────────────────────────
+[[kv_namespaces]]
+binding = "CACHE"
+id      = "987812277a2c47c29b8b52c1e7d5dd4b"
+
+# ── 환경변수 ─────────────────────────────────────────────────────────────────
+[vars]
+SITE_ID  = "be32d9c3-aa66-49f2-9a47-74e6d36cf868"
+GH_OWNER = "choichoi3227-crypto"
+GH_REPO  = "cp-be32d9c3-site-be32d9c3"
+
+# GITHUB_TOKEN은 secret으로 설정 (wrangler secret put GITHUB_TOKEN)

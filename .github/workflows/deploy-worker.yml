@@ -1,0 +1,66 @@
+name: Cloudflare Worker 자동 배포
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker.js'
+      - 'php-runner.js'
+      - 'wrangler.toml'
+      - 'wrangler-php.toml'
+  workflow_dispatch:
+
+jobs:
+  deploy-php-runner:
+    name: PHP Runner Worker 배포 (먼저 실행)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: CF_API_TOKEN secret 확인
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "❌ CF_API_TOKEN secret이 설정되지 않았습니다."
+            echo "   레포 Settings → Secrets and variables → Actions → New repository secret"
+            echo "   Name: CF_API_TOKEN  |  Value: Cloudflare API 토큰 (Workers:Edit 권한 필요)"
+            echo "   Name: CF_ACCOUNT_ID |  Value: Cloudflare 계정 ID"
+            echo "   토큰 발급: https://dash.cloudflare.com/profile/api-tokens"
+            exit 1
+          fi
+          echo "✅ CF_API_TOKEN 확인 완료"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      - name: php-runner Worker 배포
+        run: npx wrangler deploy --config wrangler-php.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+  deploy-worker:
+    name: 메인 Worker 배포
+    runs-on: ubuntu-latest
+    needs: deploy-php-runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: GITHUB_TOKEN secret 설정
+        run: echo "${{ secrets.GH_TOKEN }}" | npx wrangler secret put GITHUB_TOKEN
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        continue-on-error: true
+      - name: 메인 Worker 배포
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      - name: php-runner GITHUB_TOKEN secret 설정
+        run: echo "${{ secrets.GH_TOKEN }}" | npx wrangler secret put GITHUB_TOKEN --config wrangler-php.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        continue-on-error: true

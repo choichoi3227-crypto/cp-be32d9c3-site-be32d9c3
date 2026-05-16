@@ -1,0 +1,123 @@
+name: WordPress 정적 캐시 생성 + GitHub Pages 배포
+
+on:
+  schedule:
+    - cron: '0 */3 * * *'  # 3시간마다 정적 캐시 갱신
+  workflow_dispatch:
+  push:
+    paths:
+      - 'wp-content/**'
+      - 'wp-config.php'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build-cache:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PHP 8.2 + WordPress 의존성 설치
+        run: |
+          # Ubuntu 24.04 (noble) 기본 저장소에는 php8.2 패키지가 없음 → ondrej/php PPA 추가
+          sudo apt-get update -qq
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository -y ppa:ondrej/php
+          sudo apt-get update -qq
+          sudo apt-get install -y php8.2-cli php8.2-sqlite3 php8.2-mbstring php8.2-xml php8.2-curl php8.2-gd sqlite3
+          echo "✅ PHP 설치 완료: $(php8.2 -v | head -1)"
+
+      - name: WordPress 코어 다운로드 (없으면)
+        run: |
+          if [ ! -f "wp-includes/version.php" ]; then
+            echo "📥 WordPress 6.7.2 다운로드..."
+            wget -q https://wordpress.org/wordpress-6.7.2.tar.gz -O /tmp/wp.tar.gz
+            tar -xzf /tmp/wp.tar.gz -C /tmp/
+            # wp-content, wp-config.php 보존하면서 코어만 복사
+            rsync -a --exclude='wp-content' --exclude='wp-config.php' /tmp/wordpress/ ./
+            echo "✅ WordPress 코어 복사 완료"
+          fi
+
+      - name: SQLite DB 확인
+        run: |
+          mkdir -p _db
+          if [ ! -f "_db/wordpress.db" ]; then
+            echo "⚠️ _db/wordpress.db 없음 — install-wordpress.yml 먼저 실행 필요"
+            exit 0
+          fi
+          echo "✅ DB 파일 존재: $(du -h _db/wordpress.db | cut -f1)"
+
+      - name: WordPress 정적 캐시 생성 (_cache/)
+        env:
+          WP_SITEURL: ${{ vars.WP_SITEURL || 'http://localhost' }}
+        run: |
+          mkdir -p _cache
+          
+          # PHP 내장 서버로 WordPress 실행
+          PHP_BIN=$(which php8.2 || which php)
+          
+          # wp-config.php에서 siteurl 확인
+          if [ -f "wp-config.php" ]; then
+            SITEURL=$(grep "siteurl|home" wp-config.php | head -1 | grep -oP "https?://[^'"]*" | head -1 || echo "")
+          fi
+          SITEURL=${SITEURL:-"http://localhost:8888"}
+          
+          echo "🚀 PHP 내장 서버 시작: $SITEURL"
+          $PHP_BIN -S localhost:8888 -t . index.php &
+          SERVER_PID=$!
+          sleep 3
+          
+          # 메인 페이지 캐시 생성
+          echo "📄 메인 페이지 크롤링..."
+          curl -s -L --max-time 30 "http://localhost:8888/"             -H "Host: $(echo $SITEURL | sed 's|https?://||')"             -o _cache/index.html 2>/dev/null || true
+          
+          # sitemap에서 URL 추출해서 크롤링
+          curl -s -L --max-time 15 "http://localhost:8888/sitemap.xml"             -H "Host: $(echo $SITEURL | sed 's|https?://||')"             -o /tmp/sitemap.xml 2>/dev/null || true
+          
+          if [ -f "/tmp/sitemap.xml" ]; then
+            grep -oP '(?<=<loc>)[^<]+' /tmp/sitemap.xml | head -50 | while read url; do
+              path=$(echo "$url" | sed "s|$SITEURL||" | sed "s|http://localhost:8888||")
+              if [ -n "$path" ] && [ "$path" != "/" ]; then
+                mkdir -p "_cache${path}"
+                curl -s -L --max-time 20 "http://localhost:8888${path}"                   -H "Host: $(echo $SITEURL | sed 's|https?://||')"                   -o "_cache${path}index.html" 2>/dev/null || true
+                echo "  ✅ 캐시: $path"
+              fi
+            done
+          fi
+          
+          kill $SERVER_PID 2>/dev/null || true
+          
+          # 캐시 결과 확인
+          CACHE_COUNT=$(find _cache -name "*.html" | wc -l)
+          echo "✅ 정적 캐시 생성: ${CACHE_COUNT}개 페이지"
+
+      - name: _cache/ 커밋 & 푸시
+        run: |
+          git config user.name "CloudPress Bot"
+          git config user.email "bot@cloudpress.site"
+          git add _cache/
+          if git diff --staged --quiet; then
+            echo "변경 없음 — 캐시 최신 상태"
+          else
+            git commit -m "🔄 WordPress 정적 캐시 갱신 [$(date '+%Y-%m-%d %H:%M')]"
+            git push
+            echo "✅ _cache/ 업데이트 완료"
+          fi
+
+      - name: GitHub Pages 배포 (폴백용)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _cache
+
+  deploy-pages:
+    needs: build-cache
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment
