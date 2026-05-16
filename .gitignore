@@ -1,0 +1,4 @@
+node_modules/
+*.log
+wp-content/uploads/cache/
+wp-content/cache/
